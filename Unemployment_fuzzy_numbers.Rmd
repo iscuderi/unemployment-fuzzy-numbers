@@ -1,0 +1,854 @@
+---
+title: "Entrega Final - Análisis del Desempleo en la UE"
+subtitle: "Tecnicas Estadísticas con Información Imprecisa"
+author: "Marc Vila e Ignacio Scuderi"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, comment = NA)
+```
+
+```{r}
+library(FuzzyNumbers)
+library(tidyverse)
+library(reshape2)
+library(kableExtra)
+```
+
+# 1. Introducción
+
+El objetivo del presente trabajo es analizar mediante técnicas de *fuzzy numbers* los datos relativos al paro anual en la Unión Europea (principales UE + Reino Unido) para el periodo 2005-2021. Los datos han sido recogidos de la página de la OCDE (https://data.oecd.org/unemp/unemployment-rate.htm).
+
+Se han elegido los datos del paro por considerar su medición imprecisa. Hemos optado por una fuzzyficación triangular simétrica, es decir que consideramos que a partir de la medición provista por la OCDE, el grado de certidumbre de dicho valor decae.
+
+La información antes mencionada se encuentra incluida en el fichero "desempleo_ue.csv". Las columnas correspondientes a las variables están separadas per comas y el archivo contiene una primera fila con los nombres de las variables. A continuación se detallan las mismas:
+
+* **Location:** Nombre del país.
+* **Indicator:** Siglas que reflejan que la métrica seleccionada es la tasa de paro armonizada (personas en edad de trabajar que no tienen trabajo, están disponibles para trabajar y han tomado medidas concretas para encontrarlo. Este indicador se mide en número de desempleados como porcentaje de la población activa y está ajustado estacionalmente.)
+* **Subject:** Sigla que detalla que nos encontramos frente a cifras de paro totales, sin desagregación por género. 
+* **Measure:** Indica que la métrica se corresponde con el porcentaje de personas en paro en relación con la fuerza de trabajo.
+* **Frequency:** Indica que los datos son anuales.
+* **Time:** Año del dato.
+* **Value:** Tasa de paro.
+* **Flag codes:** Aclaraciones relativas a los valores. En nuestro caso, dicha columna solo toma valores vacíos o con la letra "b", que indica un quiebre en la serie temporal.
+
+# 2. Carga y limpieza de los datos
+
+Procedemos a cargar los datos:
+
+```{r}
+df <- read.csv("desempleo_ue.csv", header=T)
+```
+
+Realizamos un head de los datos de manera de tener una primera aproximación a los mismos:
+
+```{r}
+kbl(head(df)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+A los fines de nuestro análisis las columnas "Indicator", "Subject", "Measure", "Frequency", y "Flag.Codes" no nos añaden información, por lo que procedemos a excluirlas del data frame. Asimismo, renombramos las columnas "Location", "Time", y "Value" por "Pais", "Año", y "Tasa.paro".
+
+```{r}
+df = df[c(1,6,7)]
+df = setNames(df, c("Pais","Año","Tasa.paro"))
+```
+
+Comprobamos que el formato de los datos es el correcto:
+
+```{r}
+
+data.frame(variable = names(df),
+           classe = sapply(df, typeof),
+           first_values = sapply(df, function(x) paste0(head(x),  collapse = ", ")),
+           row.names = NULL) %>% 
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+```
+
+A continuación realizamos un unmelt de la columna "Año":  
+
+```{r, echo=T}
+df = reshape2::dcast(df, Pais ~ Año,fun.aggregate = sum,value.var = "Tasa.paro")
+df = setNames(df, c("Pais","X2005","X2006","X2007","X2008","X2009","X2010","X2011","X2012","X2013","X2014","X2015","X2016","X2017","X2018","X2019","X2020","X2021"))
+```
+
+Verificamos que no haya valores NA :
+
+```{r}
+kbl(colSums(is.na(df))) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+Verificamos la ausencia de blanks:
+
+```{r}
+kbl(colSums(df == ""))%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# 3. Análisis crisp y fuzzy de los datos del paro
+
+### 3.1 Conversión en números borrosos
+
+La elección de la *fuzzificación* no es arbitraria. Se basa en diferentes estudios llevados a cabo por entidades independientes de los sectores públicos nacionales que cifran la diferencia entre el paro real y estimado desde el 15% hasta el 25%. A modo de armonización, se ha optado por tomar un número borroso triangular con extremos por encima y por debajo del 10% del valor crisp. Como último punto, a más tasa de desempleo, mayor longitud del soporte del número fuzzy, lo cual tiene sentido dada la dificultad incremental que resulta de tener que supervisar a una cantidad más elevada de la población.
+
+```{r}
+fuzzynum <- list()
+for (i in 1:17){
+  fuzzynum[[i]] <- list()
+  for (j in 1:nrow(df)){
+    fuzzynum[[i]][[j]] <- 
+      as.PiecewiseLinearFuzzyNumber(TriangularFuzzyNumber(df[j,i+1]*(1-.10), df[j,i+1], df[j,i+1]*(1+.10)))
+  }
+}
+
+df['evolucion'] = df$X2021 - df$X2005
+df2=df
+```
+
+### 3.2 Gráficos de la distribución de la tasa de desempleo de los países de la UE entre 2005-2021. TOP 5 países con mayor y menor desempleo medio entre 2005-2021.
+
+A fin de hacerse un idea en términos crisp de cómo ha evolucionado el paro a lo largo de los años para todos los países, un gráfico de barras ordenado de mayor a menor es la mejor manera de hacer comparaciones directas entre ellos. 
+
+```{r, fig.align = 'center'}
+par(mfrow=c(2,2))
+
+ggplot(data = df, aes(x=X2005, y=reorder(Pais,X2005), fill=Pais)) +
+  geom_bar(stat="identity") +
+  ggtitle("Distribución del paro 2005") +
+  xlab("%") +
+  ylab("País")
+ggplot(data = df, aes(x=X2010, y=reorder(Pais,X2010), fill=Pais)) +
+  geom_bar(stat="identity") +
+  ggtitle("Distribución del paro 2010") +
+  xlab("%") +
+  ylab("País")
+ggplot(data = df, aes(x=X2015, y=reorder(Pais,X2015), fill=Pais)) +
+  geom_bar(stat="identity") +
+  ggtitle("Distribución del paro 2015") +
+  xlab("%") +
+  ylab("País")
+ggplot(data = df, aes(x=X2021, y=reorder(Pais,X2021), fill=Pais)) +
+  geom_bar(stat="identity") +
+  ggtitle("Distribución del paro 2021") +
+  xlab("%") +
+  ylab("País")
+```
+
+En términos generales se puede observar un aumento generalizado del desempleo entre el 2010-2015, siendo éste mucho menor en los periodos del 2005 y 2021. Otro aspecto a destacar es que hay países como Luxemburgo o Alemania a los que la crisis financiera y del Covid-19 no han afectado casi en absoluto, mientras que para otros como España, Grecia o Irlanda han sido muy perjuiciosas, hasta el punto de aún no acercarse en absoluto a los niveles iniciales.
+
+A continuación, se calcula el desempleo medio desde el 2005 hasta el 2021 para todos los países, a fin de hacer una comparativa global en relación a cuáles de ellos han sufrido niveles de paro más elevados en general durante todo el periodo considerado.
+
+```{r, fig.align = 'center'}
+df$media = c(0)
+
+for(i in 1:23){
+  df$media[i] = round(mean(unlist(df[i,2:18])),2)
+}
+
+ggplot(data = df, aes(x=media, y=reorder(Pais,media), fill=Pais)) +
+  geom_bar(stat="identity") +
+  ggtitle("Distribución del paro medio 2005-2021") +
+  xlab("%") +
+  ylab("País")
+```
+
+Sin embargo, estos valores son estimaciones o cantidades imprecisas, así que tiene sentido convertirlas en números borrosos para reflejar la realidad de una forma más dispersa. Después, se procede a presentar los TOP 5 equivalentes fuzzy por arriba y por debajo según el gráfico crisp presentado anteriormente.
+
+```{r}
+fuzzynum_medio <- list()
+for (i in 1:23){
+    fuzzynum_medio[[i]] <- 
+      as.PiecewiseLinearFuzzyNumber(TriangularFuzzyNumber(df[i,20]*(1-.10), df[i,20], df[i,20]*(1+.10)))
+}
+```
+
+El soporte de Grecia es [`r supp(fuzzynum_medio[[11]])`] ; el de España [`r supp(fuzzynum_medio[[6]])`] ; el de Eslovaquia [`r supp(fuzzynum_medio[[21]])`] ; el de Portugal [`r supp(fuzzynum_medio[[20]])`] y el de Letonia [`r supp(fuzzynum_medio[[17]])`].
+
+```{r, fig.align = 'center'}
+par(mfrow=c(2,3))
+plot(fuzzynum_medio[[11]], main="Grecia")
+plot(fuzzynum_medio[[6]], main="España")
+plot(fuzzynum_medio[[21]], main="Eslovaquia")
+plot(fuzzynum_medio[[20]], main="Portugal")
+plot(fuzzynum_medio[[17]], main="Letonia")
+```
+
+El soporte de Chequia es [`r supp(fuzzynum_medio[[3]])`]; el de Luxemburgo [`r supp(fuzzynum_medio[[16]])`]; el de Austria [`r supp(fuzzynum_medio[[1]])`]; el de Gran Bretaña [`r supp(fuzzynum_medio[[10]])`] y el de Dinamarca [`r supp(fuzzynum_medio[[5]])`].
+
+```{r, fig.align = 'center'}
+par(mfrow=c(2,3))
+plot(fuzzynum_medio[[3]], main="Chequia")
+plot(fuzzynum_medio[[16]], main="Luxemburgo")
+plot(fuzzynum_medio[[1]], main="Austria")
+plot(fuzzynum_medio[[10]], main="Gran Bretaña")
+plot(fuzzynum_medio[[5]], main="Dinamarca")
+```
+
+La diferencia entre los países que de media han tenido mejores tasas de desempleo y los peores es de más de 10 puntos, cantidad incrementado al expresarlos en términos borrosos al ser la imprecisión inferida mediante una distancia del 10% respecto del centro. Esto demuestra la gran dispersión que hay entre los países europeos en relación con las medidas del mercado de trabajo.
+
+### 3.3 Datos agregados de la UE y comparación con las medias 
+
+La idea de este apartado es presentar tanto datos agregados de la UE y su evolución temporal como el desarrollo del paro en los países con mayor/menor número de desempleados (caso crisp/fuzzy).
+
+```{r}
+fuzzy_medias <- list(0)
+
+for(i in 1:length(fuzzynum)){
+  fuzzy_medias[[i]] <- fuzzynum[[i]][[1]]
+  for(j in 2:nrow(df)){
+    fuzzy_medias[[i]] <- fuzzy_medias[[i]] + fuzzynum[[i]][[j]]
+  }
+  fuzzy_medias[[i]] <- fuzzy_medias[[i]]/nrow(df) 
+}
+
+crisp_medias <- c()
+
+for(i in 1:length(fuzzynum)){
+  crisp_medias[i] <- sum(df[,1+i])/nrow(df)
+}
+
+crisp_medias <- data.frame(año = 2005:2021, media = crisp_medias)
+```
+
+Se toman todos los números borrosos desde 2005 hasta 2021, sumándolos uno a la vez por año y después dividiendo el resultado entre el total de filas del data frame principal. Este proceso se repite para los números crisp, pudiendo hacerse una comparación directa fácilmente.
+
+```{r, fig.align = 'center'}
+ggplot(crisp_medias, aes(crisp_medias$año, crisp_medias$media)) +
+  geom_line() +
+  labs(x = "Año", y = "Tasa de paro", title = "Evolución de la tasa de paro de la UE: 2005-2021 (crisp)") +
+  theme(
+  plot.title = element_text(family = "Helvetica", face = "bold", size = (15)),
+  axis.title = element_text(family = "Helvetica", size = (10)),
+  axis.text = element_text(family = "Courier", size   = (10)))
+```
+
+Inicialmente desciende desde un 8'5% hasta un 6'5%. Después se puede observar como a partir del 2007-2008 hay una subida considerable en la tasa de desempleo media en la UE (pasa de alrededor de 6'5% hasta 11%), revirtiéndose a niveles inferior pre-crisis financiera antes de la del Covid-19. Esta última parece no afectar demasiado al número de parados, a pesar de sus fuertes consecuencias económicas, posiblemente por la existencia de las políticas púbicas que han amortiguado el impacto negativo.
+
+```{r, fig.align = 'center'}
+par(mfrow=c(3,2))
+plot(fuzzy_medias[[1]], main="2005")
+plot(fuzzy_medias[[2]], main="2006")
+plot(fuzzy_medias[[3]], main="2007")
+plot(fuzzy_medias[[4]], main="2008")
+plot(fuzzy_medias[[5]], main="2009")
+plot(fuzzy_medias[[6]], main="2010")
+
+par(mfrow=c(3,2))
+plot(fuzzy_medias[[7]], main="2011")
+plot(fuzzy_medias[[8]], main="2012")
+plot(fuzzy_medias[[9]], main="2013")
+plot(fuzzy_medias[[10]], main="2014")
+plot(fuzzy_medias[[11]], main="2015")
+plot(fuzzy_medias[[12]], main="2016")
+
+par(mfrow=c(3,2))
+plot(fuzzy_medias[[13]], main="2017")
+plot(fuzzy_medias[[14]], main="2018")
+plot(fuzzy_medias[[15]], main="2019")
+plot(fuzzy_medias[[16]], main="2020")
+plot(fuzzy_medias[[17]], main="2021")
+```
+
+Se puede ver claramente la sensación diferente que provoca un gráfico de líneas simple en comparación con una serie temporal de números borrosos. El desempleo es una cantidad imprecisa, lo cual supone que podría ser considerablemente mejor o peor a lo que se expresa desde los organismos públicos. De hecho, podría ser que un 10% de diferencia fuese insuficiente para captar la complejidad del problema, pero se ha optado ser conservador en este análisis. Otro aspecto a tener en cuenta es que cuanto más elevada es la tasa oficial de paro, más disperso está el número borroso: suele haber más desanimados, más personas apuntadas a cursos del paro, mayores subsidios por desempleo... Todo ello contribuye a una mayor confusión a la hora de hacer una medición fiable. Esto se ha plasmado en los peores años de la crisis financiera, en los cuales aumenta el rango del soporte del número borroso (2011-2015).
+
+```{r}
+fuzzy_distancia_media = list()
+
+for(i in 1:length(fuzzynum)){
+  fuzzy_distancia_media[[i]] = list()
+  for(j in 1:nrow(df)){
+  fuzzy_distancia_media[[i]][[j]] = distance(fuzzy_medias[[i]],   fuzzynum[[i]][[j]], type = "Euclidean")
+  }
+}
+
+crisp_distancia_media = as.data.frame(matrix(0,nrow=23, ncol=18))
+crisp_distancia_media[,1] = df$Pais
+colnames(crisp_distancia_media) = c("País",2005:2021)
+
+for(i in 1:length(fuzzynum)){
+  for(j in 1:nrow(df)){
+    crisp_distancia_media[j,i+1] = df[j,i+1]-crisp_medias[i,2]
+  }
+}
+```
+
+El siguiente paso es calcular la distancia entre las medias fuzzy/crisp y los respectivos números borrosos/exactos. Se quiere hallar aquellos países que están más por debajo (3) o por encima (3) de la media desde los dos puntos de vista y a qué distancia se encuentran del centro. Para este fin se toman cuatro periodos equidistantes para poder hacer un seguimiento temporal adecuado sin cargar el documento de gráficos (2005-2010-2015-2021).
+
+```{r}
+t1= crisp_distancia_media[,c(1,2)] %>%
+  arrange(`2005`) %>%
+  head(3) 
+
+rownames(t1) = c("1 ","2 ","3 ")
+kbl(t1) %>%
+  kable_styling(bootstrap_options = c(align = 'c',"striped", "hover", "condensed"))
+
+kbl(crisp_distancia_media[,c(1,2)] %>%
+  arrange(`2005`) %>%
+  tail(3)) %>%
+  kable_styling(bootstrap_options = c(align = 'c',"striped", "hover", "condensed"))
+
+t2= crisp_distancia_media[,c(1,7)] %>%
+  arrange(`2010`) %>%
+  head(3)
+rownames(t2) = c("1 ","2 ","3 ")
+kbl(t2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+kbl(crisp_distancia_media[,c(1,7)] %>%
+  arrange(`2010`) %>%
+  tail(3)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+t3=crisp_distancia_media[,c(1,12)] %>%
+  arrange(`2015`) %>%
+  head(3)
+rownames(t3) = c("1 ","2 ","3 ")
+kbl(t3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+kbl(crisp_distancia_media[,c(1,12)] %>%
+  arrange(`2015`) %>%
+  tail(3)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+t4= crisp_distancia_media[,c(1,18)] %>%
+  arrange(`2021`) %>%
+  head(3)
+rownames(t4) = c("1 ","2 ","3 ")
+kbl(t4) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+kbl(crisp_distancia_media[,c(1,18)] %>%
+  arrange(`2021`) %>%
+  tail(3)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+Una vez obtenidos los resultados de las distancias entre los números borrosos y la media de la UE, se presenta el resultado de los tres países más por encima y por debajo de la misma en formato numérico basado en la ordenación de la diferencia respecto de la media en formato crisp (es decir, resultados fuzzy ordenados por el ranking del caso preciso):
+
+* **2005:** Polonia y Eslovaquia se alejaban bastante de la tendencia del momento en Europa, que era de bajo desempleo y altos salarios provocados por la ya conocida burbuja financiera. También se incluye a Alemania, la cual no disfrutaba de los niveles de empleo actuales, aunque tampoco se aproximaba a los otros dos. Por otra parte, parece que Irlanda, Luxemburgo y Gran Bretaña disfrutaban de un desempleo del tipo natural (o voluntario).
+
+* **2010:** en el inicio de la crisis financiera cambió radicalmente el panorama. Países que habían gozado de un desempleo mucho más bajo de lo habitual se encontraron ante un paro descontrolado, ascendiendo a las primeras posiciones del ranking debido a una economía poco solida. Los datos indican que la peor parte se la llevaron España (más de 9 puntos por encima de la media), Letonia (8'8) y Lituania (7'1). Otros estados como Luxemburgo, Austria u Holanda aguantaron bien la crisis financiera (con una economía más robusta), hasta el punto de tener una tasa de desempleo baja o casi natural.
+
+* **2015:** Grecia adelanta con holgura a una España que no hace más que empeorar su situación económica con un desempleo 15'4 y 12'5 puntos por encima de la media respectivamente. Muy de lejos les sigue Portugal con poco más de 3'4% superior al centro. En cuanto a los mejor posicionados, economías como Alemania, Chequia y Gran Bretaña vuelven a tomar la cima en términos de desempleo, adelantando de nuevo a aquellos países que aguantaron mejor la crisis financiera.
+
+* **2021:** tras los momentos más difíciles de la pandemia, España y Grecia siguen siendo los países con peores perspectivas laborales con unos 8 puntos superiores a la media de la UE, seguidos de lejos por Italia con unos 3. Gran Bretaña se ve afectada en parte por el Brexit y Polonia consigue situarse como un país con un paro muy bajo (a nivel del natural).
+
+```{r}
+a=paste("Polonia =", round(fuzzy_distancia_media[[1]][[19]],2))
+b=paste("Eslovaquia =", round(fuzzy_distancia_media[[1]][[21]],2))
+c=paste("Alemania =", round(fuzzy_distancia_media[[1]][[4]],2))
+d=paste("Irlanda =", round(fuzzy_distancia_media[[1]][[13]],2))
+e=paste("Luxemburgo =", round(fuzzy_distancia_media[[1]][[16]],2))
+f=paste("Gran Bretaña =", round(fuzzy_distancia_media[[1]][[10]],2))
+
+tabla= rbind(a,b,c,d,e,f)
+rownames(tabla) = c("1","2","3","4","5","6")
+colnames(tabla) = "Desempleo 2005"
+
+kbl(tabla) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+g= paste("España =", round(fuzzy_distancia_media[[6]][[6]],2))
+h= paste("Letonia =", round(fuzzy_distancia_media[[6]][[17]],2))
+i= paste("Lituania =", round(fuzzy_distancia_media[[6]][[15]],2))
+j= paste("Luxemburgo =", round(fuzzy_distancia_media[[6]][[16]],2))
+k= paste("Austria =", round(fuzzy_distancia_media[[6]][[1]],2))
+l= paste("Holanda =", round(fuzzy_distancia_media[[6]][[18]],2))
+
+tabla2= rbind(g,h,i,j,k,l)
+rownames(tabla2) = c("1","2","3","4","5","6")
+colnames(tabla2) = "Desempleo 2010"
+
+kbl(tabla2) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+m= paste("Grecia =", round(fuzzy_distancia_media[[11]][[11]],2))
+n= paste("España =", round(fuzzy_distancia_media[[11]][[6]],2))
+o= paste("Portugal =", round(fuzzy_distancia_media[[11]][[20]],2))
+p= paste("Alemania =", round(fuzzy_distancia_media[[11]][[4]],2))
+q= paste("Chequia =", round(fuzzy_distancia_media[[11]][[3]],2))
+r= paste("Gran Bretaña =", round(fuzzy_distancia_media[[11]][[10]],2))
+
+tabla3= rbind(m,n,o,p,q,r)
+rownames(tabla3) = c("1","2","3","4","5","6")
+colnames(tabla3) = "Desempleo 2015"
+
+kbl(tabla3) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+
+s=paste("España =", round(fuzzy_distancia_media[[17]][[6]],2))
+t= paste("Grecia =", round(fuzzy_distancia_media[[17]][[11]],2))
+u= paste("Italia =", round(fuzzy_distancia_media[[17]][[14]],2))
+v= paste("Chequia =", round(fuzzy_distancia_media[[17]][[3]],2))
+w= paste("Polonia =", round(fuzzy_distancia_media[[17]][[19]],2))
+x= paste("Alemania =", round(fuzzy_distancia_media[[17]][[4]],2))
+
+tabla4= rbind(s,t,u,v,w,x)
+rownames(tabla4) = c("1","2","3","4","5","6")
+colnames(tabla4) = "Desempleo 2021"
+
+kbl(tabla4) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+A pesar de todo lo expuesto anteriormente, las distancias entre los números borrosos y la media fuzzy no dan una perspectiva completa del problema, por lo que a continuación se muestran las cantidades borrosas para los países ya mencionados en el punto anterior durante los cuatro años incluidos.
+
+```{r, fig.align = 'center'}
+par(mfrow=c(2,3))
+plot(fuzzynum[[1]][[19]], main = "Polonia 2005")
+plot(fuzzynum[[1]][[21]], main = "Eslovaquia 2005")
+plot(fuzzynum[[1]][[4]], main = "Alemania 2005")
+plot(fuzzynum[[1]][[13]], main = "Irlanda 2005")
+plot(fuzzynum[[1]][[16]], main = "Luxemburgo 2005")
+plot(fuzzynum[[1]][[10]], main = "Gran Bretaña 2005")
+
+par(mfrow=c(2,3))
+plot(fuzzynum[[6]][[6]], main = "España 2010")
+plot(fuzzynum[[6]][[17]], main = "Letonia 2010")
+plot(fuzzynum[[6]][[15]], main = "Lituania 2010")
+plot(fuzzynum[[6]][[16]], main = "Luxemburgo 2010")
+plot(fuzzynum[[6]][[1]], main = "Austria 2010")
+plot(fuzzynum[[6]][[18]], main = "Holanda 2010")
+
+par(mfrow=c(2,3))
+plot(fuzzynum[[11]][[11]], main = "Grecia 2015")
+plot(fuzzynum[[11]][[6]], main = "España 2015")
+plot(fuzzynum[[11]][[20]], main = "Portugal 2015")
+plot(fuzzynum[[11]][[4]], main = "Alemania 2015")
+plot(fuzzynum[[11]][[3]], main = "Chequia 2015")
+plot(fuzzynum[[11]][[10]], main = "Gran Bretaña 2015")
+
+par(mfrow=c(2,3))
+plot(fuzzynum[[17]][[6]], main = "España 2021")
+plot(fuzzynum[[17]][[11]], main = "Grecia 2021")
+plot(fuzzynum[[17]][[14]], main = "Italia 2021")
+plot(fuzzynum[[17]][[3]], main = "Chequia 2021")
+plot(fuzzynum[[17]][[19]], main = "Polonia 2021")
+plot(fuzzynum[[17]][[4]], main = "Alemania 2021")
+```
+
+### 3.4 Desviación típica mediante las distancias borrosas
+
+Con los análisis realizados parece que las tasas de paro de los países estén más dispersas según los diferentes sucesos económicos que se dan durante los años. Además, la precisión se ve afectada de forma incremental a medida que el desempleo es más elevado, sucediendo lo contrario si es menor. Esto se ha captado bien mediante las distancias de los números borrosos de los países respecto de la media fuzzy, por lo que utilizarlas para hacerse una idea de una desviación típica más correcta parece una buena opción.
+
+```{r, fig.align = 'center'}
+fuzzy_dt = c()
+
+for(i in 1:17){
+  fuzzy_dt[i] = sd(unlist(fuzzy_distancia_media[[i]]))
+}
+
+fuzzy_dt = data.frame(año = 2005:2021, desviación_típica = fuzzy_dt)
+
+kable(fuzzy_dt, caption='Desviación típica a lo largo de los años') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+No hay duda de que la crisis financiera acentuó considerablemente las diferencias entre los mercados de trabajo de los diferentes países europeos, algo que no se ha repetido en la del Covid-19. En otras palabras, en épocas de expansión económica se reducen las diferencias en cuanto a riqueza entre la UE, pero en recesión empeora la situación sustancialmente para unos y muy poco para otros.
+
+
+### 3.5 Análisis de los 5 paises con mayor y menor desempleo en 2021.
+
+A continuación, se analizan los 5 países con mayor y menor tasa de parados en 2021, de manera de relevar cuáles son los países con mayores dificultades en el primer año posterior a la crisis del Covid-19.
+
+```{r}
+store <- c()
+paises <- c()
+t = 0
+x2021 <- list()
+for (i in 1:nrow(df2)){
+  x2021[[i]] <- fuzzynum[[17]][[i]]
+  store = c(store, x2021[[i]])
+  paises = c(paises, df2[which(df2[,"X2021"] == x2021[[i]]@a2[[1]]),1])
+  t=t+1
+  if (t==1){
+    resultados_2021 = data.frame(paises[1], store[[1]]@a1,store[[1]]@a2,store[[1]]@a4)
+  } else {
+    resultados_2021[t,] = data.frame(paises[t], store[[t]]@a1,store[[t]]@a2,store[[t]]@a4)
+    }
+}
+
+colnames(resultados_2021)=c("País", "Soporte mín", "Core", "Soporte max")
+resultados_2021_max = resultados_2021 %>% arrange(desc(Core)) %>% slice_head(n=5)
+rownames(resultados_2021_max)=NULL
+
+resultados_2021_min = resultados_2021 %>% arrange(Core) %>% slice_head(n=5)
+rownames(resultados_2021_min)=NULL
+
+```
+
+Los 5 países con mayor desempleo en 2021 son:
+
+```{r}
+kbl(resultados_2021_max) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+Podemos ver que España y Grecia practicamente se encuentran igualados y lideran con diferencia la métrica, con un core de 14.8% y un 14.79% de desempleados respectivamente. Seguido a ellos encontramos a Italia con un 9.56%, Suecia con 8.8%, y Francia con un 7.87%.
+
+A continuación procedemos a graficar el soporte y core de la tasa de parados fuzzy de dichos países:
+
+```{r, fig.align = 'center'}
+fuzzynum_mas_2021 <- function(fila){
+  # Función que genera los fuzzy numbers
+  fn <- as.PiecewiseLinearFuzzyNumber(TriangularFuzzyNumber(resultados_2021_max[fila,2], resultados_2021_max[fila,3], resultados_2021_max[fila,4]))
+  return(fn)
+}
+
+plot(fuzzynum_mas_2021(1), col = 'black', xlim = c(7, 17))
+plot(fuzzynum_mas_2021(2), col = 'red', add = T)
+plot(fuzzynum_mas_2021(3), col = 'blue', add = T)
+plot(fuzzynum_mas_2021(4), col = 'green', add = T)
+plot(fuzzynum_mas_2021(5), col = 'orange', add = T)
+legend(
+  "topright", 
+  lty=c(1,1,1,1,1), 
+  col=c("black", "red", "blue", "green", 'orange'),
+  legend = resultados_2021_max$País)
+```
+
+Análogamente, los 5 países con menor desempleo en 2021 son:
+
+```{r}
+kbl(resultados_2021_min)  %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+Se observa que los países con menos desempleo son Chequia y Polonia, que tienen un core de 2.8% y 3.37% respectivamente, seguidos por Alemania, Hungría, y Países Bajos, con 3.57%, 4.05%, y 4.22% respectivamente.
+Podemos ver una fuerte predominancia de países industrializados. En este sentido, Alemania representó el 29% de la producción industrial vendida en 2020 por la UE, mientras que Polonia el 5%, y Países Bajos el 3%. De igual modo, Chequia y Polonia ocupan el primer y tercer puesto dentro de la UE en lo que a empleos industriales sobre el total de ocupados se refiere, respectivamente.
+
+A continuación procedemos a graficar su tasa de paro fuzzy:
+
+```{r, fig.align = 'center'}
+fuzzynum_min_2021 <- function(fila){
+  fn <- as.PiecewiseLinearFuzzyNumber(TriangularFuzzyNumber(resultados_2021_min[fila,2], resultados_2021_min[fila,3], resultados_2021_min[fila,4]))
+  return(fn)
+}
+
+plot(fuzzynum_min_2021(1), col = 'black', xlim = c(2.5, 4.7))
+plot(fuzzynum_min_2021(2), col = 'red', add = T)
+plot(fuzzynum_min_2021(3), col = 'blue', add = T)
+plot(fuzzynum_min_2021(4), col = 'green', add = T)
+plot(fuzzynum_min_2021(5), col = 'orange', add = T)
+legend(
+  "topright", 
+  lty=c(1,1,1,1,1), 
+  col=c("black", "red", "blue", "green", 'orange'),
+  legend = resultados_2021_min$País)
+```
+
+### 3.6 Análisis de los 5 países con mayor y menor desempleo (Evolucion 2005/2021)
+
+Seguidamente, calculamos una columna que contiene la evolución para el periodo 2005/2021 de la tasa de paro por país. De este modo, podemos relevar qué países han logrado reducir más su desempleo y cuáles han sufrido los mayores incrementos.
+
+```{r}
+store <- c()
+paises <- c()
+t = 0
+evolucion <- list()
+for (i in 1:nrow(df2)){
+  # Cálculo de la resta fuzzy
+  evolucion[[i]] <- fuzzynum[[17]][[i]] - fuzzynum[[1]][[i]]
+  store = c(store, evolucion[[i]])
+  paises = c(paises, df2[which(df2[,"evolucion"] == evolucion[[i]]@a2[[1]]),1])
+  t=t+1
+  if (t==1){
+    resultados = data.frame(paises[1], store[[1]]@a1,store[[1]]@a2,store[[1]]@a4)
+  } else {
+    resultados[t,] = data.frame(paises[t], store[[t]]@a1,store[[t]]@a2,store[[t]]@a4)
+    }
+}
+
+colnames(resultados)=c("País", "Soporte mín", "Core", "Soporte max")
+resultados_mas = resultados %>% arrange(desc(Core)) %>% slice_head(n=5)
+rownames(resultados_mas)=NULL
+
+resultados_menos = resultados %>% arrange(Core) %>% slice_head(n=5)
+rownames(resultados_menos)=NULL
+
+
+```
+
+Vemos que los 5 países que más han aumentado su desempleo son:
+
+```{r}
+kbl(resultados_mas) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+Se observa que los países que más han aumentado su número de parados en el periodo analizado son España y Grecia. Estos resultados resultan coherentes, ya que dichos países han sido de los más golpeados por la crisis financiera de 2008 en Europa. A estos le siguen, aunque bastante por detras, Italia, Irlanda, y Suecia.
+
+A continuación procedemos a graficarlos:
+
+```{r, fig.align = 'center'}
+fuzzynum_mas <- function(fila){
+  # Función que genera los fuzzy numbers a partir de 
+  fn <- as.PiecewiseLinearFuzzyNumber(TriangularFuzzyNumber(resultados_mas[fila,2], resultados_mas[fila,3], resultados_mas[fila,4]))
+  return(fn)
+}
+
+plot(fuzzynum_mas(1), col = 'black', xlim = c(-1, 8))
+plot(fuzzynum_mas(2), col = 'red', add = T)
+plot(fuzzynum_mas(3), col = 'blue', add = T)
+plot(fuzzynum_mas(4), col = 'green', add = T)
+plot(fuzzynum_mas(5), col = 'orange', add = T)
+legend(
+  "topright", 
+  lty=c(1,1,1,1,1), 
+  col=c("black", "red", "blue", "green", 'orange'),
+  legend = resultados_mas$País)
+```
+
+De igual modo, los 5 países que más han reducido su desempleo son:
+
+```{r}
+kbl(resultados_menos) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+Se observa que el país que más ha reducido su tasa de desempleo en el periodo ha sido Polonia, país que ha crecido sostenidamente desde el año 1992, inclusive luego de la crisis financiera de 2008 (con la salvedad del año 2020 con motivo de la crisis del Covid 19). A este país le siguen Eslovaquia, Alemania, Chequia, y Hungría. 
+
+A continuación, se procede a graficarlos:
+
+```{r, fig.align = 'center'}
+fuzzynum_menos <- function(fila){
+  # Función que genera los fuzzy numbers a partir de 
+  fn <- as.PiecewiseLinearFuzzyNumber(TriangularFuzzyNumber(resultados_menos[fila,2], resultados_menos[fila,3], resultados_menos[fila,4]))
+  return(fn)
+}
+
+plot(fuzzynum_menos(1), col = 'black', xlim = c(-17, -1.9))
+plot(fuzzynum_menos(2), col = 'red', add = T)
+plot(fuzzynum_menos(3), col = 'blue', add = T)
+plot(fuzzynum_menos(4), col = 'green', add = T)
+plot(fuzzynum_menos(5), col = 'orange', add = T)
+legend(
+  "topright", 
+  lty=c(1,1,1,1,1), 
+  col=c("black", "red", "blue", "green", 'orange'),
+  legend = resultados_menos$País)
+```
+
+### 3.7 Calcular el mínimo y máximo crisp y fuzzy de la evolucion del desempleo
+
+```{r, echo=T}
+#evolucion fuzzy
+min <- evolucion[[1]]
+max <- evolucion[[1]]
+
+
+for (i in 2:nrow(df2)) {
+  min <- minimum(min, evolucion[[i]])
+  max <- maximum(max, evolucion[[i]])
+}
+
+#evolucion crisp
+menor_crisp= df2 %>% select(Pais, evolucion) %>% arrange(evolucion) %>% head(1)
+mayor_crisp= df2 %>% select(Pais, evolucion) %>% arrange(desc(evolucion)) %>% head(1)
+```
+
+El país con mayor evolución del desempleo fuzzy es `r df2[which(df2[,19] == max@a2),1]`, con core `r max@a2`  y soporte [`r max@a1` , `r max@a4`].
+
+El país con mayor evolución del desempleo fuzzy es `r df2[which(df2[,19] == min@a2),1]`, con core `r min@a2`  y soporte [`r min@a1` , `r min@a4`].
+
+Los resultados coinciden con lo obtenido en el caso crisp.
+
+### 3.8.1 Distribución empírica borrosa de la evolución del desempleo para los delta 0.25, 0.5, y 0.75.
+
+```{r, echo=T}
+distribucion <- function(evol, cortes) {
+  izq <- c()
+  der <- c()
+  resultados_dist <- data.frame(izq = " ",
+                         der = " ",
+                         y = seq(from = 0, to = 1, by = 1/(nrow(df2)-1)))
+  for(i in evol) {
+      izq = c(izq, alphacut(i, cortes)[1])
+      der = c(der, alphacut(i, cortes)[2])
+    }
+  resultados_dist$izq = sort(izq)
+  resultados_dist$der = sort(der)
+
+  distribucion_plot = ggplot(resultados_dist) +
+      geom_path(aes(x = izq, y = y)) +
+      geom_path(aes(x = der, y = y)) +
+      xlab("") +
+      ylab("")
+return(distribucion_plot)}
+```
+
+Distribución con delta 0.25:
+
+```{r}
+distribucion(evolucion,0.25)
+```
+
+Distribución con delta 0.50:
+
+```{r}
+distribucion(evolucion,0.5)
+```
+
+Distribución con delta 0.75:
+
+```{r}
+distribucion(evolucion,0.75)
+```
+
+### 3.8.2 Calcular la mediana de la evolución del desempleo y ver los que 5 países más cercanos en términos crisp y fuzzy
+
+```{r, echo=T}
+# Crisp
+mediana = median(df2$evolucion) # mediana crisp
+df2$distancia= abs(df2$evolucion-mediana)
+#menor distancia crisp
+tabla <- df2 %>% select(Pais, distancia) %>% arrange(distancia) %>% slice_head(n=5)
+
+
+
+fmediana <- function(evol, cortes) {
+  izq <- c()
+  der <- c()
+  resultados_dist <- data.frame(izq = " ",
+                         der = " ",
+                         y = seq(from = 0, to = 1, by = 1/(nrow(df2)-1)))
+  for(i in evol) {
+      izq = c(izq, alphacut(i, cortes)[1])
+      der = c(der, alphacut(i, cortes)[2])
+    }
+  resultados_dist$izq = sort(izq)
+  resultados_dist$der = sort(der)
+
+return(resultados_dist)}
+
+
+resultados_dist_0 = fmediana(evolucion,0)
+resultados_dist_1 = fmediana(evolucion,1)
+
+medianafuzzysupp1 <- resultados_dist_0[which(resultados_dist_0[,"y"] == 0.5),1]
+medianafuzzysupp2 <- resultados_dist_0[which(resultados_dist_0[,"y"] == 0.5),2]
+
+medianafuzzycore <- resultados_dist_1[which(resultados_dist_1[,"y"] == 0.5),1]
+
+medianafuzzy = as.PiecewiseLinearFuzzyNumber(TriangularFuzzyNumber(medianafuzzysupp1[[1]], medianafuzzycore[[1]],medianafuzzysupp2[[1]]))
+
+# Distancia a la mediana fuzzy:
+distance = c()
+for (i in 1:length(evolucion)){
+  dist = distance(medianafuzzy, evolucion[[i]], type='Euclidean')
+  distance <- append(distance, dist)
+  rm(i, dist)
+}
+
+# which(distance %in% sort(distance)[1:5])
+
+
+```
+
+Los países que se encuentran a una menor distancia en términos borrosos a la mediana son:
+
+```{r}
+kable(df2[c(7,8,9,15,22),1]) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+
+Asimismo, los países que se encuentran a una menor distancia, en términos crisp, son:
+
+```{r}
+#caso crisp
+kbl(tabla) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+Vemos que si bien el orden no coindice, los países crisp y fuzzy de ambos listados sí.
+
+### 3.9 Frecuencia relativa borrosa del desempleo en 2021
+
+Hemos considerado que un desempleo inferior al 5% puede ser catalogado como "bajo". En base al plot de debajo, se releva que aproximadamente un poco más del 30% de los países poseen dicho nivel de paro. Con niveles de alfa cortes bajos, dicha proporción oscila entre un 26% a un 39%.  
+
+```{r, echo=T, fig.align = 'center'}
+interseccion <- function(a, b) {
+  if((b[1] >= a[1] & b[1] <= a[2]) |
+     (b[2] >= a[1] & b[2] <= a[2])) {
+    return (TRUE)
+  } else {
+    return (FALSE)
+  }
+}
+
+inclusion <- function(a, b) {
+  if(b[1] >= a[1] & b[2] <= a[2]) {
+    return (TRUE)
+  } else {
+    return (FALSE)
+  }
+}
+
+alphacut_vector = seq(0, 1, by=0.01) # vector de alphacuts
+kk = c(0, 5) # queremos ver los países que tienen un desempleo debajo del 5% por considerarlo bajo
+n = length(x2021) # número de páises
+
+intersection_freq_vector = c()
+inclusion_freq_vector = c()
+for (i in 1:length(alphacut_vector)){
+  intersection_count = 0
+  inclusion_count = 0
+  for (j in x2021){
+    # Cuenta el número de intersecciones e inclusiones
+    intersection_count = intersection_count + 
+      interseccion(kk, alphacut(j, alphacut_vector[i]))
+    inclusion_count = inclusion_count +
+      inclusion(kk, alphacut(j, alphacut_vector[i]))
+  }
+  # Calcula la frecuencia relativa de interseccioes e inclusiones
+  intersection_freq = intersection_count/n
+  intersection_freq_vector = append(intersection_freq_vector, intersection_freq)
+  inclusion_freq = inclusion_count/n
+  inclusion_freq_vector = append(inclusion_freq_vector, inclusion_freq)
+}
+
+inclusion_freq_vector = rev(inclusion_freq_vector)
+
+# Preparación del data frame para su representación
+x1 = sort(rep(inclusion_freq_vector, 2), decreasing = F)
+x2 = rev(sort(rep(intersection_freq_vector, 2), decreasing = T))
+x = c(x1[-1], x2)
+alphacut = c(sort(rep(seq(0, 1, by=0.01), 2)), rev(sort(rep(seq(0, 1, by=0.01), 2))))[-404]
+
+# Definición del data frame.
+df1 <- data_frame(x, alphacut)
+
+# Gráfico
+ggplot(df1) +
+  geom_path(mapping = aes(x = x, y = alphacut))
+
+
+```
+
+# 4. Conclusiones
+
+-Los países que han tenido más desempleo medio en el periodo 2005-2021 han sido Grecia, España, Eslovaquia, Portugal y Lituania. Los que han presentado de media una tasa de paro alrededor de la natural han sido Austria, Luxemburgo, Chequia, Gran Bretaña y Dinamarca.
+
+-Al considerar solo los datos de 2021 vemos que los países con mayor desempleo han sido España, Grecia, Italia, Suecia, y Francia. Los que relevan una menor tasa de parados son Chequia, Polonia, Alemania, Hungría, y Países Bajos. Se observa que los países con una fuerte parcipación indutrial, poseen mejor desempeño.
+
+-Los países del sur de europa lideran el incremento del desempleo en el periodo 2005-2021. Estos han sido los más golpeados por la crisis financiera del 2008 y del Covid 19. Por el contrario, los 5 países que más han reducido su tasa de paro, integran geográficamente europa central.
+
+-Las diferencias entre los países con mejor situación laboral y peor se disparan hasta más de 10 puntos, siendo la cantidad crisp una mala aproximación de la realidad, dado que a mayor tasa de desempleo más imprecisión en la medición hay. Esto se repite durante cualquier año del periodo, siempre teniendo en cuenta que durante la crisis financiera la distancia se incrementa aún más (no sucede lo mismo con la del Covid-19).
+
+-La consecuencia directa del punto anterior es que la desviación típica real entre las tasas de desempleo de los países es más alta de lo que se muestra en las cifras oficiales, ampliándose aún más en épocas de crisis económicas.
+
+-Aproximadamente un 30% de los países analizados poseen un desempleo bajo (inferior al 5%). A niveles de alfa cortes bajos, dicha proporción oscila entre un 26% a un 39%.
+
